@@ -1,0 +1,10 @@
+# 仅管理程序源码，业务数据留在本地。
+/*
+!/.gitignore
+!/code/
+/code/**
+!/code/**/
+!/code/**/*.py
+!/code/**/*.ipynb
+**/__pycache__/
+**/.ipynb_checkpoints/
