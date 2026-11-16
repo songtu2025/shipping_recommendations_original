@@ -2,6 +2,7 @@ import re
 import pandas as pd
 import numpy as np
 import calendar
+import math
 import datetime
 from datetime import timedelta
 
@@ -141,6 +142,7 @@ def calculate_inventory(start_date, initial_inventory, daily_sales, restock_date
     Tuple，包含缺货天数、缺货期间销售量损失、缺货时间段列表、在库可售天数
     """
 
+    start_date = pd.Timestamp(start_date).normalize()
     current_date = start_date
     inventory = initial_inventory  # 初始库存
     days_without_stock = 0  # 缺货天数
@@ -149,29 +151,40 @@ def calculate_inventory(start_date, initial_inventory, daily_sales, restock_date
     available_sales = len(daily_sales)  # 初始化总目标可售天数
     is_first = True  # 记录是否是第一个缺货时间段
 
+    # 同一天的多笔到货合并，当天先入库再销售。
+    restocks = {}
+    for date, quantity in zip(restock_dates, restock_quantities):
+        date = pd.Timestamp(date).normalize()
+        restocks[date] = restocks.get(date, 0) + quantity
+
     # 遍历每日销售量的列表，模拟每一天的销售情况。
     for sales_quantity in daily_sales:
+
         # 检查当前日期是否有补货
-        if current_date in restock_dates:  # 如果当前日期 current_date 在 restock_dates 列表中，表示有补货。
-            inventory += restock_quantities[restock_dates.index(current_date)]   # 通过 restock_dates.index(current_date) 找到当前日期对应的索引，然后从 restock_quantities 中获取补货数量并加到当前库存 inventory 中。
+        inventory += restocks.get(current_date, 0)
 
         # 根据每日销售更新库存
         inventory -= sales_quantity
+        # 小数日均累减可能留下极小负数，数学上的零库存不记为缺货。
+        if math.isclose(inventory, 0, abs_tol=1e-10):
+            inventory = 0
 
         # 检查库存是否为负数（缺货）
-        if inventory <= 0:
+        if inventory < 0:
             # 如果 stockout_periods 为空或者上一个缺货时间段的结束日期不是前一天，表示这是一个新的缺货时间段
             if not stockout_periods or stockout_periods[-1]['end_date'] != current_date - timedelta(days=1):
                 # 断货开始时间距离当前的天数，计算从 start_date 到当前日期的天数 lost_sales_day
                 lost_sales_day = (current_date - start_date).days
                 stockout_periods.append(
                     {'start_date': current_date, 'end_date': current_date, 'lost_sales': abs(inventory),
-                     'lost_sales_day': lost_sales_day, 'duration': 1})
+                     'lost_sales_day': lost_sales_day, 'duration': 1,
+                     'daily_lost_sales': [abs(inventory)]})
             # 否则，更新最后一个缺货时间段的结束日期、销售量损失和持续时间。
-            else: 
+            else:
                 stockout_periods[-1]['end_date'] = current_date
                 stockout_periods[-1]['lost_sales'] += abs(inventory)
                 stockout_periods[-1]['duration'] += 1
+                stockout_periods[-1]['daily_lost_sales'].append(abs(inventory))
 
             # 在库可售天数
             if is_first: # 如果是第一个缺货时间段，记录从 start_date 到当前日期的天数作为在库可售天数。
@@ -184,6 +197,7 @@ def calculate_inventory(start_date, initial_inventory, daily_sales, restock_date
 
         # 移动到下一天；将 current_date 增加一天，模拟下一天的销售情况。
         current_date += timedelta(days=1)
+        # print(f"current_date: {current_date}, sales_quantity: {sales_quantity}, inventory: {inventory}, lost_sales: {lost_sales}, days_without_stock: {days_without_stock}")
 
     return days_without_stock, lost_sales, stockout_periods, available_sales
 
@@ -203,13 +217,15 @@ def calculate_available_sales(initial_inventory, daily_sales):
     available_sales = 0  # 初始化在库可售天数
     for sales_quantity in daily_sales:
         inventory -= sales_quantity
+        if math.isclose(inventory, 0, abs_tol=1e-10):
+            inventory = 0
         if inventory >= 0:
             available_sales += 1
         else:
             break
     return available_sales
 
-def process_datas(predict_df, sales_df, inventory_df, shipment_df):
+def process_datas(predict_df, sales_df, inventory_df, shipment_df, current_date=None):
     """
       处理数据，生成合并后的数据框、发货数据透视表和SKU库存状况表
 
@@ -237,16 +253,15 @@ def process_datas(predict_df, sales_df, inventory_df, shipment_df):
     shipment_ret['预计到仓日期'] = pd.to_datetime(shipment_ret['预计到仓日期'])
     shipment_ret['ID'] = shipment_ret[['MSKU', 'SKU', '店铺-站点']].sum(axis=1)
 
-    # 计算日期差异
+    # 与库存模拟共用起始日期，起始日为第0天，并计入当月预测。
+    predict_df = predict_df.copy()
+    predict_df['月份'] = pd.to_datetime(predict_df['月份']).dt.normalize()
     predict_df['当月总天数'] = predict_df['月份'].apply(lambda x: calendar.monthrange(x.year, x.month)[1])  # 获取当月的总天数
-    # predict_df['当前可用天数'] = (predict_df['月份'] + pd.offsets.MonthEnd(0) - datetime.datetime.now()).dt.days + 1  # 当月最后一天 - 已过去的天数 + 1 = 当月剩余天数；由于时间取整，下午运行和上午运行可能差一天
-
-    reference_date = datetime.datetime.now() - datetime.timedelta(days=0) # n天前的日期，days = 1，代表前一天，即昨天日期。当前时间 - days 天。
+    reference_date = pd.Timestamp(current_date if current_date is not None else datetime.datetime.now()).normalize()
     predict_df['当前可用天数'] = (predict_df['月份'] + pd.offsets.MonthEnd(0) - reference_date).dt.days + 1
-    # predict_df['当前可用天数'] = (predict_df['月份'] + pd.offsets.MonthEnd(0) - reference_date).dt.days + 3
 
-    predict_df = predict_df.query('当前可用天数 > 0')  # 过滤掉已经结束的月份（剩余天数 ≤ 0）
-    # 对 '当前可用天数' 列进行 clip 操作:. 把剩余天数限制在合理范围：不少于 0，也不超过该月的总天数。
+    predict_df = predict_df.query('当前可用天数 > 0').sort_values('月份', kind='stable')
+    # 对 '当前可用天数' 列进行 clip 操作
     predict_df['当前可用天数'] = np.clip(predict_df['当前可用天数'], a_min=0, a_max=predict_df['当月总天数'])
 
     # 合并数据框
@@ -255,7 +270,8 @@ def process_datas(predict_df, sales_df, inventory_df, shipment_df):
                         on=['站点', 'Listing'], how='left')
 
     # 计算MSKU每日均值
-    merge_df['MSKU日均'] = (merge_df['Listing_月度预估销量'] / merge_df['当月总天数']) * merge_df['款式销占比'] * merge_df['SKU销占比']
+    merge_df['MSKU日均'] = (merge_df['Listing_月度预估销量'] / merge_df['当月总天数']) * merge_df['款式销占比'] * \
+                           merge_df['SKU销占比']
 
     # 与库存数据合并
     merge_df = pd.merge(left=merge_df, right=inventory_df, left_on=['店铺-站点', '积加SKU', 'MSKU'],
@@ -270,61 +286,24 @@ def process_datas(predict_df, sales_df, inventory_df, shipment_df):
     return merge_df, shipment_ret, sku_inv
 
 def replace_prefix(a, b):
-    """
-    用列表a替换列表b的前len(a)个元素。
-    要求：len(a) <= len(b)
-    """
-    b = b.copy()      # 如果不想修改原列表
-    b[:len(a)] = a
-    return b
+    """用自定义日均覆盖预测前段，保持原预测长度且不修改输入列表。"""
+    result = b.copy()
+    count = min(len(a), len(result))
+    result[:count] = a[:count]
+    return result
 
 def get_daily_sales_parm(target_days, temp_df):
-    """
-    获取每日销售量参数的函数。
-
-    Parameters:
-    - target_days: int，目标天数
-    - temp_df: DataFrame，包含销售数据的DataFrame
-
-    Returns:
-    list，包含每日销售量的列表
-    """
-
-    # # 确保没有 NaN 值 todo
-    # temp_df['MSKU日均'] = temp_df['MSKU日均'].fillna(0)
-    # temp_df['当前可用天数'] = temp_df['当前可用天数'].fillna(0)
-
-    # 获取msku日均列表
-    msku_avg_days_pro = temp_df['MSKU日均列表'].iloc[0]
-
-    sales_avg = temp_df.MSKU日均.reset_index(drop=True)
-    curr_days = temp_df.当前可用天数.reset_index(drop=True)
-    # print('curr_days:',curr_days)
-
-    # 找到累计和超过目标天数的索引
-    cumulative_sum = np.cumsum(curr_days)
-    index = np.argmax(cumulative_sum > target_days)
-    # 如果 index 为 0，说明所有累计和都小于 target_days，此时将 index 设置为数组的最后一个索引。
-    if index == 0:
-        index = len(cumulative_sum) - 1
-    # print(f'index:{index}')
-    # print('------------------------------')
-    # print(f'cumulative_sum：{cumulative_sum}')
-
-    # 更新 curr_days 和 sales_avg
-    # 如果目标天数小于累计和的最后一个值，调整 curr_days 中的最后一个值，使其恰好达到 target_days。截取 curr_days 和 sales_avg，只保留到 index + 1 的部分
-    if index < len(curr_days) and target_days <= cumulative_sum.iloc[-1]:
-        curr_days.iloc[index] = target_days - (cumulative_sum[index] - curr_days.iloc[index])
-    curr_days = curr_days.iloc[:index + 1]
-    sales_avg = sales_avg.iloc[:index + 1]
-    # print('curr_days:\n', curr_days)
-    # 使用列表推导式生成每日销售量的列表。对于每一对 avg（日均销售量）和 days（天数），重复 avg 值 days 次。
-    avg_sales_original_ls = [item for avg, days in zip(sales_avg, curr_days) for item in [avg] * int(days)]
-    
-    # 将【计算出的MSKU日均列表-avg_sales_original_ls】替换为【自定义的MSKU日均列表-msku_avg_days_pro】，只替换前len(msku_avg_days_pro) 个值
-    avg_sales_ls_new = replace_prefix(msku_avg_days_pro, avg_sales_original_ls)
-
-    return avg_sales_ls_new
+    """按真实月份展开预测，自定义MSKU日均从第0天覆盖，最多取目标天数。"""
+    remaining = int(target_days)
+    daily_sales = []
+    for average, days in zip(temp_df['MSKU日均'], temp_df['当前可用天数']):
+        if remaining <= 0:
+            break
+        count = min(int(days), remaining)
+        daily_sales.extend([average] * count)
+        remaining -= count
+    custom_daily_sales = temp_df['MSKU日均列表'].iloc[0]
+    return replace_prefix(custom_daily_sales, daily_sales)
 
 def get_total_sales(target_days, temp_df):
     """
@@ -366,7 +345,7 @@ def display_stockout_details(stockout_periods):
         length = len(stockout_periods)
         for i, period in enumerate(stockout_periods):
             # 断货开始日期、断货结束日期、断货天数、损失销量
-            info = f"{period['start_date'].strftime('%Y-%m-%d')}   {period['end_date'].strftime('%Y-%m-%d')}|{period['duration']}|{process_value(period['lost_sales'])}|{int(period['lost_sales_day'])}"
+            info = f"{period['start_date'].strftime('%Y-%m-%d')}   {period['end_date'].strftime('%Y-%m-%d')}|{period['duration']}|{round(period['lost_sales'], 6)}|{int(period['lost_sales_day'])}"
             if (i + 1) != length:
                 details = details + info + '|'
             else:
@@ -392,6 +371,9 @@ def process_stockout_dataframe(stockout_dict):
 
     # 将'断货详情'列的字符串按照 '|' 进行拆分，扩展为多列
     stockout_detail = stockout_df['断货详情'].str.split('|', expand=True)
+    # 全部未缺货时也保留首组详情列，供主程序按固定列名导出。
+    group_count = max(1, (stockout_detail.shape[1] + 3) // 4)
+    stockout_detail = stockout_detail.reindex(columns=range(group_count * 4))
 
     # 获取拆分后的 DataFrame 的列名列表
     columns = stockout_detail.columns.to_list()
@@ -415,116 +397,15 @@ def process_stockout_dataframe(stockout_dict):
 
 
 # 生成发货建议
-def calculate_sales(daily_sales_list, start_day, end_day, index):
-    """
-    计算给定时间段内的总销售量。
-    """
-    # 如果 start_day 大于 end_day，表示时间段无效，返回 0
-    if start_day > end_day:
-        return 0
-    return sum(daily_sales_list[index][start_day:end_day + 1]) # 使用切片操作 daily_sales_list[index][start_day:end_day + 1] 提取指定时间段内的销售量。使用 sum 函数计算该时间段内的总销售量并返回。
-
-
-def process_data(data, daily_sales_list, index, dhl_start_days, dhl_deadline, airport_deadline):
-    """
-    处理数据，计算每种运输方式的损失销售量。
-    """
-    # 获取每一个SKU断货信息。  
-        # 使用 iloc 和 get_indexer 获取当前行从 '断货时间1' 列开始的所有数据。
-        # data.columns.get_indexer(['断货时间1'])[0] 返回 '断货时间1' 列的索引位置。
-        # input_data 是一个 Pandas Series，包含当前行的所有断货信息。
-    input_data = data.iloc[index, data.columns.get_indexer(['断货时间1'])[0]:]
-
-    # 初始化物流方式发货量
-    target_dhl, target_air_freight, target_sea_freight = 0, 0, 0
-
-    # 每组 4 列表示一个断货时间段的详细信息，包括断货总天数、损失销量和断货开始天数。
-    for loop_index in range(0, int(len(input_data) / 4)):
-        
-        dhl, air_freight, sea_freight = 0, 0, 0
-        # 获取原始值。从 input_data 中提取当前断货时间段的断货总天数、损失销量和断货开始天数的原始值
-        quekou_total_days_raw, lost_sales_raw, quekou_start_day_raw = input_data[loop_index * 4 + 1], input_data[
-            loop_index * 4 + 2], input_data[loop_index * 4 + 3]
-
-        # 检查是否为NaN，并给出默认值或处理逻辑。如果原始值不是 NaN，将其转换为整数；否则，设置为 0
-        quekou_total_days = int(quekou_total_days_raw) if not pd.isna(quekou_total_days_raw) else 0  # 断货总天数
-        quekou_start_day = int(quekou_start_day_raw) if not pd.isna(quekou_start_day_raw) else 0    # 断货开始天数
-
-        # 校验数据的合理性。如果断货总天数或断货开始天数为负数，跳过当前循环。
-        if quekou_total_days < 0 or quekou_start_day < 0:
-            continue
-        
-        # 计算断货结束天数。等于断货开始天数+断货总天数
-        quekou_end_day = quekou_start_day + quekou_total_days
-
-        # 确保结束天数不超出界限。如果断货结束天数超出日均销量列表的长度，将其设置为日均销量列表的长度。
-        if quekou_end_day > len(daily_sales_list[index]):
-            quekou_end_day = len(daily_sales_list[index])
-
-        # 计算不同情况下的销售损失。根据断货开始天数和运输方式的截止日期，计算每种运输方式的损失销售量。
-        # 开始断货天数小于DHL期限
-        if quekou_start_day <= dhl_deadline:
-            # 只发DHl。如果断货结束天数小于或等于 DHL 的截止日期，
-            if quekou_end_day <= dhl_deadline:
-                # 考虑在库为0时DHL的在途时间。如果断货开始天数小于或等于 DHL 的起始天数，DHL 损失销售量为 0。
-                if quekou_start_day <= dhl_start_days:
-                    dhl = 0
-                else: # 否则，计算 DHL 的损失销售量。
-                    dhl = calculate_sales(daily_sales_list, quekou_start_day, quekou_end_day + 1, index)
-            # 发DHL和空运。 如果断货结束天数小于或等于空运的截止日期，计算 DHL 和空运的损失销售量。
-            elif quekou_end_day <= airport_deadline:
-                # 考虑在库为0时DHL的在途时间
-                if quekou_start_day <= dhl_start_days:
-                    dhl = calculate_sales(daily_sales_list, dhl_start_days + 1, dhl_deadline, index)
-                else:
-                    dhl = calculate_sales(daily_sales_list, quekou_start_day, dhl_deadline, index)
-                air_freight = calculate_sales(daily_sales_list, dhl_deadline + 1, quekou_end_day, index)
-            # 发DHL、空运和海运 如果断货结束天数大于空运的截止日期，计算 DHL、空运和海运的损失销售量。
-            else:
-                # 考虑在库为0时DHL的在途时间
-                if quekou_start_day <= dhl_start_days:
-                    dhl = calculate_sales(daily_sales_list, dhl_start_days + 1, dhl_deadline, index)
-                else:
-                    dhl = calculate_sales(daily_sales_list, quekou_start_day, dhl_deadline, index)
-                air_freight = calculate_sales(daily_sales_list, dhl_deadline + 1, airport_deadline, index)
-                sea_freight = calculate_sales(daily_sales_list, airport_deadline + 1, quekou_end_day, index)
-        # 开始断货天数小于空运期限  如果断货开始天数小于或等于空运的截止日期，进一步判断：
-        elif quekou_start_day <= airport_deadline:
-            # 只发空运  如果断货结束天数小于或等于空运的截止日期，计算空运的损失销售量。
-            if quekou_end_day <= airport_deadline:
-                air_freight = calculate_sales(daily_sales_list, quekou_start_day, quekou_end_day, index)
-            # 发空运和海运  如果断货结束天数大于空运的截止日期，计算空运和海运的损失销售量。
-            else:
-                air_freight = calculate_sales(daily_sales_list, quekou_start_day, airport_deadline, index)
-                sea_freight = calculate_sales(daily_sales_list, airport_deadline + 1, quekou_end_day, index)
-        # 如果开始天数不是NaN，但不在DHL或空运期限内，则为海运。    计算海运的损失销售量
-        elif not pd.isna(quekou_start_day):
-            sea_freight = calculate_sales(daily_sales_list, quekou_start_day, quekou_end_day, index)
-
-        # 累加对应运输方式的损失销售量
-        target_dhl += dhl
-        target_air_freight += air_freight
-        target_sea_freight += sea_freight
-
-    return process_value(target_dhl), process_value(target_air_freight), process_value(target_sea_freight)
-
-
-def generate_shipment_suggestion(data, daily_sales_list, index, dhl_start_days, dhl_deadline, airport_deadline):
-    """
-    data: 断货详情，dataframe类型
-    daily_sales_list: 日均销量
-    index: 当前索引 断货详情的行
-
-    生成运输建议，计算DHL、空运和海运的损失销售量。
-    """
-    # 确保输入数据有效性
-    if not isinstance(data, pd.DataFrame) or not isinstance(daily_sales_list, list) or not isinstance(index, int):
-        raise ValueError("Invalid input data types.")
-
-    if index < 0 or index >= data.shape[0]:
-        raise ValueError("Index out of bounds.")
-
-    return process_data(data, daily_sales_list, index, dhl_start_days, dhl_deadline, airport_deadline)
+def generate_shipment_suggestion(daily_shortages, dhl_start_days, dhl_deadline, airport_deadline):
+    """按第0天的实际缺口分渠道；到货当天可售，区间左闭右开。"""
+    windows = (
+        daily_shortages[dhl_start_days:dhl_deadline],
+        daily_shortages[dhl_deadline:airport_deadline],
+        daily_shortages[airport_deadline:],
+    )
+    # 每个渠道先合计再向上取整；消除浮点累加产生的极小误差。
+    return tuple(math.ceil(round(sum(window), 10)) for window in windows)
 
 
 # 定义一个函数来生成仓库优先级顺序

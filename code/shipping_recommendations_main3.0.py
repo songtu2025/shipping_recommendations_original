@@ -67,7 +67,8 @@ def main(parm_date, listing_template_path, sales_program_path, inventory_path, s
     # 将 send_goods 数据框中 MSKU、积加SKU 和 店铺-站点 这三列的值按行相加，并将结果存储到新列 ID 中; sum(axis=1) 默认是对数值型数据进行求和操作
     send_goods['ID'] = send_goods[['MSKU', '积加SKU', '店铺-站点']].sum(axis=1)
 
-    merge_df, shipment_ret, sku_inv = process_datas(predict_df, msku_daily_sales, inventory_df, shipment_df)
+    merge_df, shipment_ret, sku_inv = process_datas(
+        predict_df, msku_daily_sales, inventory_df, shipment_df, current_date=current_date)
 
     # print(merge_df.columns)
     # merge_df.to_excel(f'D:/shipping_recommendations3.0/src_data/merge_df-{days}-260630.xlsx', index = False)
@@ -78,11 +79,8 @@ def main(parm_date, listing_template_path, sales_program_path, inventory_path, s
     # 目标天数
     target_days_dict = {'短尾': 120, '中尾': 120, '长尾': 105, '迭代': 105}
 
-    # 每次处理1个MSKU
-    # 记录每个ID组的日均信息
-    # 创建一个记录日均销量的空字典
-    daily_sales_dict = {'预估日均': []}
-    shipping_thresholds = {'dhl_start_days': [], 'dhl_deadline': [], 'airport_deadline': []}
+    # 每次处理1个MSKU，并从本次模拟的逐日缺口直接生成发货建议。
+    shipment_suggestion = {'dhl_pre': [], 'air_pre': [], 'sea_pre': []}
     for item_id in merge_df['ID'].unique():
         # item_id = 'SP001-406 Black 42SP001-406 Black 42SEEKWAY:US'
         # print(item_id)
@@ -107,10 +105,6 @@ def main(parm_date, listing_template_path, sales_program_path, inventory_path, s
         dhl_deadline_val = int(temp_df['空运'].iloc[0]) if pd.notnull(temp_df['空运'].iloc[0]) else 20
         airport_deadline_val = int(temp_df['海运'].iloc[0]) if pd.notnull(temp_df['海运'].iloc[0]) else 60
         
-        shipping_thresholds['dhl_start_days'].append(dhl_start_days_val)
-        shipping_thresholds['dhl_deadline'].append(dhl_deadline_val)
-        shipping_thresholds['airport_deadline'].append(airport_deadline_val)
-
         # 规模定位。提取当前 ID 组的第一个 规模定位 值。 例如：短尾
         scale = temp_df['规模定位'].iloc[0]
 
@@ -178,10 +172,6 @@ def main(parm_date, listing_template_path, sales_program_path, inventory_path, s
         restock_quantities = msku_data['restock_quantities']
         # code = code_parm
 
-        # 存储每个ID组的日均信息，后续用于计算补货数量
-        daily_sales_dict['预估日均'].append(goal_sales)
-        # daily_sales_dict.to_excel('./file/daily_sales_dict-预估日均.xlsx', index = False)
-
         # 格式化参数
         # start_date = datetime.datetime.strptime(start_date_parm, '%Y-%m-%d') # 开始日期，即当前程序输入的日期
         # initial_inventory = initial_inventory_parm # FBA可用库存
@@ -211,6 +201,17 @@ def main(parm_date, listing_template_path, sales_program_path, inventory_path, s
         # 构建断货详情信息：断货时间段、销售量损失和缺货天数
         details = display_stockout_details(stockout_periods=stockout_periods)
 
+        # 第0天对应起始日；只补实际未满足的需求，保留断货首日的部分销量。
+        daily_shortages = [0.0] * len(goal_sales)
+        for period in stockout_periods:
+            first_day = period['lost_sales_day']
+            daily_shortages[first_day:first_day + period['duration']] = period['daily_lost_sales']
+        dhl_pre, air_pre, sea_pre = generate_shipment_suggestion(
+            daily_shortages, dhl_start_days_val, dhl_deadline_val, airport_deadline_val)
+        shipment_suggestion['dhl_pre'].append(dhl_pre)
+        shipment_suggestion['air_pre'].append(air_pre)
+        shipment_suggestion['sea_pre'].append(sea_pre)
+
         stockout_dict['ID'].append(item_id)
         stockout_dict['FBA在库可售天数'].append(available_sales_days)
         stockout_dict['FBA总可售天数'].append(available_sales_total)
@@ -218,7 +219,7 @@ def main(parm_date, listing_template_path, sales_program_path, inventory_path, s
         stockout_dict['首次断货前可售天数'].append(available_sales)
         stockout_dict['FBA库存'].append(initial_inventory)
         stockout_dict['断货风险总天数'].append(days_without_stock)
-        stockout_dict['断货总损失销量'].append(process_value(lost_sales))
+        stockout_dict['断货总损失销量'].append(round(lost_sales, 6))
         stockout_dict['断货详情'].append(details)
         # print(stockout_dict)
         
@@ -226,25 +227,7 @@ def main(parm_date, listing_template_path, sales_program_path, inventory_path, s
     # 构件Excel格式的断货详情
     stockout_df = process_stockout_dataframe(stockout_dict=stockout_dict)
 
-    # 生成 预估日均 发货建议
-    shipment_suggestion = {'dhl_pre': [], 'air_pre': [], 'sea_pre': []}
-    # print(stockout_df)
-
-    # daily_sales = pd.DataFrame(daily_sales_dict)
-    # daily_sales.to_csv('daily_sales_dict预估日均.csv', sep='\t')
-
-    # 对DataFrame-stockout_df中的每一行进行操作，TODO: 一行为一个MSKU
-    for index in stockout_df.index:
-        target_dhl_pre, target_airport_pre, target_ship_pre = generate_shipment_suggestion(data=stockout_df,
-                                                                                           daily_sales_list=daily_sales_dict['预估日均'],
-                                                                                           index=index,
-                                                                                           dhl_start_days=shipping_thresholds['dhl_start_days'][index],
-                                                                                           dhl_deadline=shipping_thresholds['dhl_deadline'][index],
-                                                                                           airport_deadline=shipping_thresholds['airport_deadline'][index])
-        # 存储预估日均及时的发货建议
-        shipment_suggestion['dhl_pre'].append(target_dhl_pre)
-        shipment_suggestion['air_pre'].append(target_airport_pre)
-        shipment_suggestion['sea_pre'].append(target_ship_pre)
+    # 建议量直接使用上面模拟出的逐日缺口，不再从格式化的断货字符串反算。
     stockout_df = pd.concat(objs=[stockout_df, pd.DataFrame(shipment_suggestion)], axis=1)
 
     # stockout_df.to_excel('计算各物流方式损失的销量结果.xlsx', index = False)
