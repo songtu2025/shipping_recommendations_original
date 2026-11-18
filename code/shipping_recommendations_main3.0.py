@@ -414,3 +414,4 @@ if __name__ == "__main__":
         sales_program_path = f'E:/sontu/shipping_recommendations/src_data/Listing销占比程序表-{days}.xlsx'
         main(parm_date, listing_template_path, sales_program_path, inventory_path, shipment_path, days=days, current_date=current_date)
         print('\n', f'已保存发货列表{parm_date}-{days}', '\n')
+        # break
