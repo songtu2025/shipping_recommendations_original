@@ -206,6 +206,7 @@ def main(parm_date, listing_template_path, sales_program_path, inventory_path, s
         for period in stockout_periods:
             first_day = period['lost_sales_day']
             daily_shortages[first_day:first_day + period['duration']] = period['daily_lost_sales']
+        # 按快递、空运、海运的到货顺序补货，取整多出的库存顺延抵扣后续缺口。
         dhl_pre, air_pre, sea_pre = generate_shipment_suggestion(
             daily_shortages, dhl_start_days_val, dhl_deadline_val, airport_deadline_val)
         shipment_suggestion['dhl_pre'].append(dhl_pre)

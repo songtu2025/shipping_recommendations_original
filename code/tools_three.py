@@ -398,14 +398,22 @@ def process_stockout_dataframe(stockout_dict):
 
 # 生成发货建议
 def generate_shipment_suggestion(daily_shortages, dhl_start_days, dhl_deadline, airport_deadline):
-    """按第0天的实际缺口分渠道；到货当天可售，区间左闭右开。"""
+    """按第0天的实际缺口分渠道，取整余量继续抵扣后续渠道；到货当天可售。"""
     windows = (
         daily_shortages[dhl_start_days:dhl_deadline],
         daily_shortages[dhl_deadline:airport_deadline],
         daily_shortages[airport_deadline:],
     )
-    # 每个渠道先合计再向上取整；消除浮点累加产生的极小误差。
-    return tuple(math.ceil(round(sum(window), 10)) for window in windows)
+    suggestions = []
+    surplus = 0.0
+    for window in windows:
+        shortage = sum(window)
+        # 先用前面渠道剩余的库存抵扣，只有不足的部分才向上取整。
+        quantity = math.ceil(max(0, round(shortage - surplus, 10)))
+        suggestions.append(quantity)
+        # 内部余量保留原精度，避免多次舍入造成额外发货。
+        surplus += quantity - shortage
+    return tuple(suggestions)
 
 
 # 定义一个函数来生成仓库优先级顺序
