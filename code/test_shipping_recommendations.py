@@ -236,30 +236,30 @@ def test_operating_daily_sales_are_scaled_and_keep_the_calendar_fallback(merge_i
         "carry_keeps_precision_between_windows",
     ],
 )
-def test_rounding_surplus_carries_forward_and_covers_demand(window_shortages, expected):
+def test_rounding_surplus_carries_forward_and_covers_demand(toolset, window_shortages, expected):
     arrivals = [START + datetime.timedelta(days=day) for day in (6, 25, 40)]
     shortages = [0.0] * 65
     for day, shortage in zip((6, 25, 40), window_shortages):
         shortages[day] = shortage
 
-    suggestion = tools_three.generate_shipment_suggestion(shortages, 6, 25, 40)
+    suggestion = toolset.generate_shipment_suggestion(shortages, 6, 25, 40)
     assert suggestion == expected
 
-    _, lost, periods, _ = tools_three.calculate_inventory(
+    _, lost, periods, _ = toolset.calculate_inventory(
         START, 0, shortages, arrivals, suggestion,
     )
     assert lost == 0
     assert daily_shortages(periods, 65) == [0.0] * 65
 
 
-def test_rounding_surplus_with_existing_stock_and_arrivals_preserves_unavoidable_loss():
+def test_rounding_surplus_with_existing_stock_and_arrivals_preserves_unavoidable_loss(toolset):
     demand = [0.0] * 65
     for day, quantity in ((0, 0.2), (1, 0.6), (2, 0.1), (5, 0.2),
                           (6, 0.5), (25, 0.5), (40, 0.3)):
         demand[day] = quantity
     original_arrivals = [START + datetime.timedelta(days=day) for day in (6, 25)]
     original_quantities = [0.3, 0.3]
-    _, baseline_loss, periods, _ = tools_three.calculate_inventory(
+    _, baseline_loss, periods, _ = toolset.calculate_inventory(
         START, 0.45, demand, original_arrivals, original_quantities,
     )
     shortages = daily_shortages(periods, 65)
@@ -267,10 +267,10 @@ def test_rounding_surplus_with_existing_stock_and_arrivals_preserves_unavoidable
     assert sum(shortages[:6]) == pytest.approx(0.65)
     assert [shortages[day] for day in (6, 25, 40)] == pytest.approx([0.2, 0.2, 0.3])
 
-    suggestion = tools_three.generate_shipment_suggestion(shortages, 6, 25, 40)
+    suggestion = toolset.generate_shipment_suggestion(shortages, 6, 25, 40)
     assert suggestion == (1, 0, 0)
     new_arrivals = [START + datetime.timedelta(days=day) for day in (6, 25, 40)]
-    _, actual_loss, periods, _ = tools_three.calculate_inventory(
+    _, actual_loss, periods, _ = toolset.calculate_inventory(
         START, 0.45, demand,
         original_arrivals + new_arrivals,
         original_quantities + list(suggestion),
