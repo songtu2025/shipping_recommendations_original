@@ -49,7 +49,7 @@ def main(parm_date, listing_template_path, sales_program_path, inventory_path, s
 
     merge_df, shipment_ret, sku_inv = process_datas(
         predict_df, sales_df, inventory_df, shipment_df, current_date=current_date)
-    # merge_df.to_excel(f'E:/sontu/shipping_recommendations/code/file/原版merge_df-{days}-2611121.xlsx', index = False)
+    merge_df.to_excel(f'E:/sontu/shipping_recommendations/code/file/原版merge_df-{days}-261116.xlsx', index = False)
     # print(merge_df.columns)
 
 
@@ -386,11 +386,8 @@ if __name__ == "__main__":
     inventory_path = f'E:/sontu/shipping_recommendations/src_data/处理后的库存/库存{parm_date}.xlsx'
     shipment_path = f'E:/sontu/shipping_recommendations/src_data/在途货件/在途货件{parm_date}.xlsx'
     for days in ['模板-CA', '模板', f'{parm_date}-15', f'{parm_date}-30', f'{parm_date}-60']:
-    # for days in ['模板', '模板-CA']:
-    # for days in [f'{parm_date}-15', f'{parm_date}-30', f'{parm_date}-60']:
-    # for days in ['模板']:
         listing_template_path = f'E:/sontu/shipping_recommendations/src_data/Listing预估表-{days}.xlsx'
         sales_program_path = f'E:/sontu/shipping_recommendations/src_data/Listing销占比程序表-{days}.xlsx'
         main(parm_date, listing_template_path, sales_program_path, inventory_path, shipment_path, days=days, current_date=current_date)
         print('\n', f'已保存发货列表{parm_date}-{days}', '\n')
-        break
+        # break
