@@ -1,6 +1,7 @@
 # 仅管理程序源码，业务数据留在本地。
 /*
 !/.gitignore
+!/README.md
 !/code/
 /code/**
 !/code/**/
